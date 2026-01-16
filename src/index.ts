@@ -2,6 +2,7 @@
  * DNS Intel MCP Server
  *
  * Domain intelligence via RDAP, DNS, and Certificate Transparency search.
+ * HTTP-only transport for Dedalus platform compatibility.
  *
  * @packageDocumentation
  */
@@ -28,9 +29,8 @@ export {
   allToolDefinitions,
 } from './tools/index.js';
 
-// Transport
+// Transport (HTTP only)
 export {
-  createStdioTransport,
   createHttpTransport,
   createHttpTransportFromConfig,
   type HttpTransport,

@@ -1,8 +1,8 @@
 /**
  * Transport layer for DNS Intel MCP server
+ * HTTP-only transport for Dedalus platform compatibility
  */
 
-export { createStdioTransport, StdioServerTransport } from './stdio.js';
 export {
   createHttpTransport,
   createHttpTransportFromConfig,

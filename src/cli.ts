@@ -3,13 +3,12 @@
 /**
  * DNS Intel MCP Server CLI
  *
- * This is the main entry point for running the MCP server.
- * It supports HTTP transport (default) for MCP communication.
+ * HTTP-only entry point for the MCP server.
+ * Starts HTTP transport on port 8080 (or HTTP_PORT env var).
  */
 
-import { createServer, createStandaloneServer } from './server.js';
-import { createStdioTransport } from './transport/stdio.js';
-import { getConfig, loadConfig } from './config.js';
+import { createStandaloneServer } from './server.js';
+import { loadConfig, getConfig } from './config.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -17,7 +16,6 @@ async function main(): Promise<void> {
   // Parse CLI arguments
   const showHelp = args.includes('--help') || args.includes('-h');
   const showVersion = args.includes('--version') || args.includes('-v');
-  const useStdio = args.includes('--stdio');
 
   if (showHelp) {
     printHelp();
@@ -38,41 +36,21 @@ async function main(): Promise<void> {
   console.error(`[INFO] Default resolver: ${config.defaultResolver}`);
   console.error(`[INFO] Request timeout: ${config.requestTimeoutMs}ms`);
 
-  // Use stdio transport if explicitly requested
-  if (useStdio) {
-    const server = createServer();
+  // Start HTTP transport
+  const standaloneServer = createStandaloneServer({ port: config.httpPort });
 
-    // Handle graceful shutdown
-    const shutdown = async () => {
-      console.error('[INFO] Shutting down...');
-      await server.close();
-      process.exit(0);
-    };
+  // Handle graceful shutdown
+  const shutdown = async () => {
+    console.error('[INFO] Shutting down...');
+    await standaloneServer.stop();
+    process.exit(0);
+  };
 
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 
-    const transport = createStdioTransport();
-    console.error('[INFO] Transport: stdio');
-    await server.connect(transport);
-    console.error('[INFO] Server connected and ready');
-  } else {
-    // Default: Use HTTP transport
-    const standaloneServer = createStandaloneServer({ port: config.httpPort });
-
-    // Handle graceful shutdown
-    const shutdown = async () => {
-      console.error('[INFO] Shutting down...');
-      await standaloneServer.stop();
-      process.exit(0);
-    };
-
-    process.on('SIGINT', shutdown);
-    process.on('SIGTERM', shutdown);
-
-    console.error(`[INFO] Transport: HTTP on port ${config.httpPort}`);
-    await standaloneServer.start();
-  }
+  console.error(`[INFO] Transport: HTTP on port ${config.httpPort}`);
+  await standaloneServer.start();
 }
 
 function printHelp(): void {
@@ -85,7 +63,6 @@ USAGE:
 OPTIONS:
   -h, --help      Show this help message
   -v, --version   Show version information
-  --stdio         Use stdio transport instead of HTTP (default: HTTP)
 
 ENVIRONMENT VARIABLES:
   DNS_RESOLVER         Default DNS resolver (default: 8.8.8.8)
@@ -93,17 +70,19 @@ ENVIRONMENT VARIABLES:
   HTTP_PORT            HTTP server port (default: 8080)
   LOG_LEVEL            Log level: debug, info, warn, error (default: info)
 
+ENDPOINTS:
+  /mcp      MCP protocol endpoint
+  /health   Health check endpoint
+  /ready    Readiness probe endpoint
+
 TOOLS:
   rdap_lookup    Query RDAP for domain registration information
   dns_query      Perform DNS queries (A, AAAA, CNAME, TXT, MX, NS, SOA)
   ct_search      Search Certificate Transparency logs
 
 EXAMPLES:
-  # Start server in HTTP mode (default, port 8080)
+  # Start server on default port (8080)
   dns-intel
-
-  # Start server in stdio mode
-  dns-intel --stdio
 
   # With custom HTTP port
   HTTP_PORT=3000 dns-intel
