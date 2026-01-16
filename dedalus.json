@@ -1,0 +1,10 @@
+{
+  "name": "dns-intel",
+  "version": "1.0.0",
+  "description": "Domain intelligence via DNS, RDAP, and certificate transparency",
+  "transport": "http",
+  "port": 8080,
+  "entrypoint": "dist/cli.js",
+  "healthCheck": "/health",
+  "mcpEndpoint": "/mcp"
+}
