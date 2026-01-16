@@ -49,12 +49,14 @@ async function main(): Promise<void> {
 
   // Start HTTP health check server if enabled
   if (enableHttp) {
-    const httpTransport = createHttpTransportFromConfig(config, async () => ({
-      status: 'ok',
-      checks: {
-        server: true,
-      },
-    }));
+    const httpTransport = createHttpTransportFromConfig(config, {
+      onHealthCheck: async () => ({
+        status: 'ok',
+        checks: {
+          server: true,
+        },
+      }),
+    });
 
     await httpTransport.start();
     console.error(`[INFO] HTTP health check server listening on port ${config.httpPort}`);

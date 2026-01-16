@@ -7,7 +7,12 @@
  */
 
 // Server
-export { createServer } from './server.js';
+export {
+  createServer,
+  createStandaloneServer,
+  type StandaloneServer,
+  type StandaloneServerOptions,
+} from './server.js';
 
 // Tools
 export {
