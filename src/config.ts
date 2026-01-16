@@ -7,7 +7,7 @@ export function loadConfig(): ServerConfig {
   return {
     defaultResolver: process.env['DNS_RESOLVER'] ?? '8.8.8.8',
     requestTimeoutMs: parseInt(process.env['REQUEST_TIMEOUT_MS'] ?? '10000', 10),
-    httpPort: parseInt(process.env['HTTP_PORT'] ?? '3000', 10),
+    httpPort: parseInt(process.env['HTTP_PORT'] ?? '8080', 10),
     logLevel: parseLogLevel(process.env['LOG_LEVEL']),
   };
 }
