@@ -1,14 +1,37 @@
-import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'http';
-import { randomUUID } from 'crypto';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
+import { createServer, IncomingMessage, ServerResponse, Server } from 'http';
 import type { ServerConfig } from '../types.js';
+import { rdapLookup, dnsQuery, ctSearch, allToolDefinitions } from '../tools/index.js';
+import { getConfig } from '../config.js';
+
+/**
+ * JSON-RPC 2.0 request type
+ */
+interface JsonRpcRequest {
+  jsonrpc: '2.0';
+  id: string | number;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+/**
+ * JSON-RPC 2.0 response type
+ */
+interface JsonRpcResponse {
+  jsonrpc: '2.0';
+  id: string | number;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+}
 
 /**
  * HTTP transport for MCP protocol and health checks
  *
  * This HTTP server provides:
- * - /mcp endpoint for MCP protocol via StreamableHTTPServerTransport
+ * - /mcp endpoint for stateless MCP JSON-RPC protocol
  * - /health endpoint for health checks in containerized deployments
  * - /ready endpoint for readiness probes
  */
@@ -20,57 +43,150 @@ export interface HttpTransport {
 
 export interface HttpTransportOptions {
   port: number;
-  createMcpServer?: () => McpServer;
   onHealthCheck?: () => Promise<{ status: string; checks: Record<string, boolean> }>;
 }
 
-// Session management for MCP connections
-const sessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
-
 /**
- * Handle MCP requests at /mcp endpoint
+ * Handle a single JSON-RPC request
  */
-async function handleMcpRequest(
-  req: IncomingMessage,
-  res: ServerResponse,
-  createMcpServer?: () => McpServer
-): Promise<void> {
-  // Get or create session
-  let sessionId = req.headers['mcp-session-id'] as string | undefined;
-  let session = sessionId ? sessions.get(sessionId) : undefined;
+async function handleJsonRpcRequest(request: JsonRpcRequest): Promise<JsonRpcResponse> {
+  const { id, method, params } = request;
 
-  if (!session) {
-    // Create new session
-    if (!createMcpServer) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'MCP server not configured' }));
-      return;
+  try {
+    switch (method) {
+      case 'initialize': {
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            protocolVersion: '2024-11-05',
+            capabilities: {
+              tools: {},
+            },
+            serverInfo: {
+              name: 'dns-intel',
+              version: '1.0.0',
+            },
+          },
+        };
+      }
+
+      case 'tools/list': {
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            tools: allToolDefinitions,
+          },
+        };
+      }
+
+      case 'tools/call': {
+        const toolName = params?.name as string;
+        const args = params?.arguments as Record<string, unknown>;
+
+        let result: unknown;
+
+        switch (toolName) {
+          case 'rdap_lookup': {
+            const domain = args?.domain as string;
+            result = await rdapLookup({ domain });
+            break;
+          }
+
+          case 'dns_query': {
+            const name = args?.name as string;
+            const type = args?.type as 'A' | 'AAAA' | 'CNAME' | 'TXT' | 'MX' | 'NS' | 'SOA';
+            const resolver = args?.resolver as string | undefined;
+            result = await dnsQuery({ name, type, resolver });
+            break;
+          }
+
+          case 'ct_search': {
+            const domain = args?.domain as string;
+            const limit = args?.limit as number | undefined;
+            const cursor = args?.cursor as string | null | undefined;
+            result = await ctSearch({ domain, limit, cursor });
+            break;
+          }
+
+          default:
+            return {
+              jsonrpc: '2.0',
+              id,
+              error: {
+                code: -32601,
+                message: `Unknown tool: ${toolName}`,
+              },
+            };
+        }
+
+        return {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(result, null, 2),
+              },
+            ],
+          },
+        };
+      }
+
+      default:
+        return {
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32601,
+            message: `Method not found: ${method}`,
+          },
+        };
     }
-
-    sessionId = randomUUID();
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => sessionId!,
-    });
-    const server = createMcpServer();
-
-    session = { transport, server };
-    sessions.set(sessionId, session);
-
-    // Connect server to transport
-    await server.connect(transport);
-
-    // Clean up session when transport closes
-    transport.onclose = () => {
-      sessions.delete(sessionId!);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return {
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code: -32603,
+        message: `Internal error: ${message}`,
+      },
     };
   }
-
-  // Handle the request with raw Node.js objects (no third argument)
-  await session.transport.handleRequest(req, res);
 }
 
 /**
- * Handle health check requests
+ * Read the request body as a string
+ */
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * Send a JSON response
+ */
+function sendJson(res: ServerResponse, statusCode: number, data: unknown): void {
+  const body = JSON.stringify(data);
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body),
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  });
+  res.end(body);
+}
+
+/**
+ * Handle health check endpoint
  */
 async function handleHealthCheck(
   res: ServerResponse,
@@ -80,78 +196,127 @@ async function handleHealthCheck(
     const health = onHealthCheck
       ? await onHealthCheck()
       : { status: 'ok', checks: {} };
-
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(health));
+    sendJson(res, 200, health);
   } catch (error) {
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        status: 'error',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      })
-    );
+    sendJson(res, 500, {
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
   }
 }
 
 /**
- * Handle readiness probe requests
+ * Handle readiness probe endpoint
  */
 function handleReadyCheck(res: ServerResponse): void {
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ ready: true }));
+  sendJson(res, 200, { ready: true });
 }
 
 /**
- * Handle 404 not found
+ * Handle not found
  */
 function handleNotFound(res: ServerResponse): void {
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Not found' }));
+  sendJson(res, 404, { error: 'Not found' });
+}
+
+/**
+ * Handle method not allowed
+ */
+function handleMethodNotAllowed(res: ServerResponse): void {
+  sendJson(res, 405, { error: 'Method not allowed' });
+}
+
+/**
+ * Handle MCP JSON-RPC endpoint
+ */
+async function handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const body = await readBody(req);
+    const request: JsonRpcRequest = JSON.parse(body);
+
+    if (!request.jsonrpc || request.jsonrpc !== '2.0') {
+      sendJson(res, 400, {
+        jsonrpc: '2.0',
+        id: request.id || 0,
+        error: {
+          code: -32600,
+          message: 'Invalid Request: missing or invalid jsonrpc version',
+        },
+      });
+      return;
+    }
+
+    const response = await handleJsonRpcRequest(request);
+    sendJson(res, 200, response);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    sendJson(res, 500, {
+      jsonrpc: '2.0',
+      id: 0,
+      error: {
+        code: -32700,
+        message: `Parse error: ${message}`,
+      },
+    });
+  }
 }
 
 /**
  * Create an HTTP transport for MCP protocol and health checks
  */
 export function createHttpTransport(options: HttpTransportOptions): HttpTransport {
-  const { port, createMcpServer, onHealthCheck } = options;
+  const { port, onHealthCheck } = options;
 
   const httpServer = createServer();
 
   httpServer.on('request', async (req: IncomingMessage, res: ServerResponse) => {
-    // CORS headers for all requests
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id');
-
+    // Handle CORS preflight
     if (req.method === 'OPTIONS') {
-      res.writeHead(204);
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      });
       res.end();
       return;
     }
 
     const url = new URL(req.url ?? '/', `http://${req.headers.host || `localhost:${port}`}`);
+    const method = req.method?.toUpperCase();
 
-    switch (url.pathname) {
-      case '/mcp':
-        await handleMcpRequest(req, res, createMcpServer);
-        break;
-      case '/health':
-        if (req.method === 'GET') {
-          await handleHealthCheck(res, onHealthCheck);
-        } else {
+    try {
+      switch (url.pathname) {
+        case '/mcp':
+          if (method === 'POST') {
+            await handleMcpRequest(req, res);
+          } else {
+            handleMethodNotAllowed(res);
+          }
+          break;
+
+        case '/health':
+          if (method === 'GET') {
+            await handleHealthCheck(res, onHealthCheck);
+          } else {
+            handleMethodNotAllowed(res);
+          }
+          break;
+
+        case '/ready':
+          if (method === 'GET') {
+            handleReadyCheck(res);
+          } else {
+            handleMethodNotAllowed(res);
+          }
+          break;
+
+        default:
           handleNotFound(res);
-        }
-        break;
-      case '/ready':
-        if (req.method === 'GET') {
-          handleReadyCheck(res);
-        } else {
-          handleNotFound(res);
-        }
-        break;
-      default:
-        handleNotFound(res);
+      }
+    } catch (error) {
+      console.error('Server error:', error);
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      sendJson(res, 500, { ok: false, error: message });
     }
   });
 
@@ -161,18 +326,15 @@ export function createHttpTransport(options: HttpTransportOptions): HttpTranspor
       return new Promise((resolve, reject) => {
         httpServer.on('error', reject);
         httpServer.listen(port, () => {
+          console.log(`dns-intel HTTP server listening on http://localhost:${port}`);
+          console.log(`MCP endpoint: http://localhost:${port}/mcp`);
+          console.log(`Health check: http://localhost:${port}/health`);
           resolve();
         });
       });
     },
     stop: () => {
       return new Promise((resolve, reject) => {
-        // Close all active sessions
-        for (const [sessionId, session] of sessions) {
-          session.server.close().catch(() => {});
-          sessions.delete(sessionId);
-        }
-
         httpServer.close((err) => {
           if (err) reject(err);
           else resolve();
@@ -186,15 +348,14 @@ export function createHttpTransport(options: HttpTransportOptions): HttpTranspor
  * Create HTTP transport from server config
  */
 export function createHttpTransportFromConfig(
-  config: ServerConfig,
+  config?: ServerConfig,
   options?: {
-    createMcpServer?: () => McpServer;
     onHealthCheck?: () => Promise<{ status: string; checks: Record<string, boolean> }>;
   }
 ): HttpTransport {
+  const cfg = config ?? getConfig();
   return createHttpTransport({
-    port: config.httpPort,
-    createMcpServer: options?.createMcpServer,
+    port: cfg.httpPort,
     onHealthCheck: options?.onHealthCheck,
   });
 }

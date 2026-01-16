@@ -1,5 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
-import { createServer } from '../../src/server.js';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 
 // Store original fetch for HTTP transport tests
 const originalFetch = global.fetch;
@@ -8,23 +7,12 @@ const originalFetch = global.fetch;
 const mockFetch = vi.fn();
 
 describe('MCP Server E2E', () => {
-  let server: ReturnType<typeof createServer>;
-
   beforeAll(() => {
     global.fetch = mockFetch;
   });
 
   afterAll(() => {
     global.fetch = originalFetch;
-  });
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    server = createServer();
-  });
-
-  afterEach(async () => {
-    await server.close();
   });
 
   describe('Tool listing', () => {
@@ -36,11 +24,8 @@ describe('MCP Server E2E', () => {
         'ct_search',
       ];
 
-      // Verify server was created with tools capability
-      expect(server).toBeDefined();
-
       // The server should have these tools available
-      // We test this indirectly by checking the tool definitions
+      // We test this by checking the tool definitions
       const { allToolDefinitions } = await import('../../src/tools/index.js');
       expect(allToolDefinitions.map(t => t.name)).toEqual(tools);
     });

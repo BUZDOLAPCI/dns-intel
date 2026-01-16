@@ -60,50 +60,18 @@ describe('HTTP Transport', () => {
   });
 
   describe('/mcp endpoint', () => {
-    it('should respond to tools/list JSON-RPC request after initialization', async () => {
-      // First, initialize a session
-      const initResponse = await httpRequest({
-        port: TEST_PORT,
-        path: '/mcp',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json, text/event-stream',
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'initialize',
-          params: {
-            protocolVersion: '2024-11-05',
-            capabilities: {},
-            clientInfo: {
-              name: 'test-client',
-              version: '1.0.0',
-            },
-          },
-        }),
-      });
-
-      expect(initResponse.status).toBe(200);
-
-      // Get the session ID from the response header
-      const sessionId = initResponse.headers['mcp-session-id'] as string;
-      expect(sessionId).toBeDefined();
-
-      // Now make the tools/list request with the session ID
+    it('should respond to tools/list JSON-RPC request (stateless)', async () => {
+      // Stateless MCP - no session required, each request is independent
       const response = await httpRequest({
         port: TEST_PORT,
         path: '/mcp',
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json, text/event-stream',
-          'mcp-session-id': sessionId,
         },
         body: JSON.stringify({
           jsonrpc: '2.0',
-          id: 2,
+          id: 1,
           method: 'tools/list',
           params: {},
         }),
@@ -111,32 +79,15 @@ describe('HTTP Transport', () => {
 
       expect(response.status).toBe(200);
 
-      const text = response.body;
-      // StreamableHTTPServerTransport may return multiple JSON objects or SSE format
-      // Parse the response to find the JSON-RPC result
-      const lines = text.split('\n').filter((line) => line.trim());
-
-      let result: { tools?: Array<{ name: string }> } | null = null;
-      for (const line of lines) {
-        try {
-          // Try to parse as JSON directly or as SSE data
-          const jsonStr = line.startsWith('data:') ? line.substring(5).trim() : line;
-          const parsed = JSON.parse(jsonStr);
-          if (parsed.result?.tools || parsed.tools) {
-            result = parsed.result || parsed;
-            break;
-          }
-        } catch {
-          // Continue trying other lines
-        }
-      }
-
-      expect(result).not.toBeNull();
-      expect(result?.tools).toBeDefined();
-      expect(Array.isArray(result?.tools)).toBe(true);
+      const data = JSON.parse(response.body);
+      expect(data.jsonrpc).toBe('2.0');
+      expect(data.id).toBe(1);
+      expect(data.result).toBeDefined();
+      expect(data.result.tools).toBeDefined();
+      expect(Array.isArray(data.result.tools)).toBe(true);
 
       // Verify our tools are listed
-      const toolNames = result?.tools?.map((t: { name: string }) => t.name) || [];
+      const toolNames = data.result.tools.map((t: { name: string }) => t.name);
       expect(toolNames).toContain('rdap_lookup');
       expect(toolNames).toContain('dns_query');
       expect(toolNames).toContain('ct_search');
@@ -149,7 +100,6 @@ describe('HTTP Transport', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json, text/event-stream',
         },
         body: JSON.stringify({
           jsonrpc: '2.0',
@@ -168,27 +118,12 @@ describe('HTTP Transport', () => {
 
       expect(response.status).toBe(200);
 
-      const text = response.body;
-      // Parse the response to find server info
-      const lines = text.split('\n').filter((line) => line.trim());
-
-      let result: { serverInfo?: { name: string; version: string } } | null = null;
-      for (const line of lines) {
-        try {
-          const jsonStr = line.startsWith('data:') ? line.substring(5).trim() : line;
-          const parsed = JSON.parse(jsonStr);
-          if (parsed.result?.serverInfo) {
-            result = parsed.result;
-            break;
-          }
-        } catch {
-          // Continue trying other lines
-        }
-      }
-
-      expect(result).not.toBeNull();
-      expect(result?.serverInfo?.name).toBe('dns-intel');
-      expect(result?.serverInfo?.version).toBe('1.0.0');
+      const data = JSON.parse(response.body);
+      expect(data.jsonrpc).toBe('2.0');
+      expect(data.id).toBe(1);
+      expect(data.result).toBeDefined();
+      expect(data.result.serverInfo?.name).toBe('dns-intel');
+      expect(data.result.serverInfo?.version).toBe('1.0.0');
     });
   });
 

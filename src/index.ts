@@ -9,7 +9,6 @@
 
 // Server
 export {
-  createServer,
   createStandaloneServer,
   type StandaloneServer,
   type StandaloneServerOptions,
